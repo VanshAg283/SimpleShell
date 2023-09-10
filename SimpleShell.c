@@ -45,6 +45,7 @@ void add_to_history(char **cmd, pid_t pid, struct timeval start, long duration) 
 
 void handle_sigint(int sig) {
     printf("\nCtrl+C pressed. Displaying history:\n");
+    // Display the only history that was written in the shell before running this program and not the whole history from the text file
     display_history();
     exit(0);
 }
@@ -112,154 +113,172 @@ void load_history_from_file() {
 }
 
 void execute_command(char **args) {
-pid_t pid;
-int status;
-struct timeval start, end;
+    pid_t pid;
+    int status;
+    struct timeval start, end;
 
-if (strcmp(args[0], "cd") == 0) {
-    if (chdir(args[1]) < 0) {
-        perror("chdir");
+    if (strcmp(args[0], "cd") == 0) {
+        if (chdir(args[1]) < 0) {
+            perror("chdir");
+        }
+        // else add the cd command in history
+        gettimeofday(&start, NULL);
+        gettimeofday(&end, NULL);
+        long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+        add_to_history(args, pid, start, duration);
+        return;
     }
-    // else add the cd command in history
+
+    if (strcmp(args[0], "history") == 0){
+        if (strcmp(args[1], "|") == 0){
+            // now give the other command history.txt file to execute
+            char *args2[MAX_LINE];
+            int i;
+            for (i = 2; args[i] != NULL; i++) {
+                args2[i-2] = args[i];
+            }
+            // at the end give history.txt file as well in args2
+            args2[i-2] = HISTORY_FILE;
+            args2[i-1] = NULL;
+            gettimeofday(&start, NULL);
+            pid = fork();
+            if (pid == 0) {
+                execvp(args2[0], args2);
+                perror("Execution Error1");
+                exit(EXIT_FAILURE);
+            } else if (pid < 0) {
+                perror("fork process failed");
+            } else {
+                waitpid(pid, &status, 0);
+                gettimeofday(&end, NULL);
+                long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+                add_to_history(args, pid, start, duration);
+            }
+        }
+        return;
+    }
+            
+
+    // copy the args array to another ogcmd array
+    char *ogcmd[MAX_LINE];
+    int i;
+    for (i = 0; args[i] != NULL; i++) {
+        ogcmd[i] = args[i];
+    }
+    ogcmd[i] = NULL;
+    // check for pipeline in command
+    int num_pipes = 0;
+    for (int i = 0; args[i] != NULL; i++) {
+        if (strcmp(args[i], "|") == 0) {
+            num_pipes++;
+        }
+    }
+    if (num_pipes > 0) {
+        pid_t id_s[num_pipes + 1];
+        int arr[num_pipes * 2];
+        int starter = 0, ender = 0;
+
+        for (int j = 0; j < num_pipes; j++) {
+            if (pipe(arr + j * 2) == -1) {
+                perror("Failed to create pipe");
+                exit(EXIT_FAILURE);
+            }
+        }
+        for (int j = 0; j <= num_pipes; j++) {
+            int ind1 = 0;
+            while (args[ender] != NULL && strcmp(args[ender], "|") != 0) {
+                ind1++;
+                ender++;
+            }
+            args[ender] = NULL;  
+            gettimeofday(&start, NULL);
+            pid_t id_new = fork();
+            if (id_new == 0) {
+                if (j < num_pipes) {
+                    dup2(arr[j * 2 + 1], STDOUT_FILENO);
+                }
+                if (j > 0) {
+                    dup2(arr[(j - 1) * 2], STDIN_FILENO);
+                }
+                for (int k = 0; k < num_pipes * 2; k++) {
+                    close(arr[k]);
+                }
+                execvp(args[starter], args + starter);
+                perror("Execution Error");
+                exit(EXIT_FAILURE);
+            } else if (id_new < 0) {
+                perror("fork process failed");
+            } else {
+                id_s[j] = id_new;
+                starter = ++ender;
+            }
+        }
+
+        for (int j = 0; j < num_pipes * 2; j++) {
+            close(arr[j]);
+        }
+        for (int j = 0; j <= num_pipes; j++) {
+            waitpid(id_s[j], &status, 0);
+        }
+        gettimeofday(&end, NULL);
+        long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+        add_to_history(ogcmd, id_s[num_pipes], start, duration);
+        return;
+    }
+
+    // execute single command
     gettimeofday(&start, NULL);
-    gettimeofday(&end, NULL);
-    long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
-    add_to_history(args, pid, start, duration);
-    return;
-}
-
-if (strcmp(args[0], "history") == 0){
-    if (strcmp(args[1], "|") == 0){
-        // now give the other command history.txt file to execute
-        char *args2[MAX_LINE];
-        int i;
-        for (i = 2; args[i] != NULL; i++) {
-            args2[i-2] = args[i];
-        }
-        // at the end give history.txt file as well in args2
-        args2[i-2] = HISTORY_FILE;
-        args2[i-1] = NULL;
-        gettimeofday(&start, NULL);
-        pid = fork();
-        if (pid == 0) {
-            execvp(args2[0], args2);
-            perror("Execution Error1");
-            exit(EXIT_FAILURE);
-        } else if (pid < 0) {
-            perror("fork process failed");
-        } else {
-            waitpid(pid, &status, 0);
-            gettimeofday(&end, NULL);
-            long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
-            add_to_history(args, pid, start, duration);
-        }
+    pid = fork();
+    if (pid == 0) {
+        execvp(args[0], args);
+        perror("Execution Error");
+        exit(EXIT_FAILURE);
+    } else if (pid < 0) {
+        perror("fork process failed");
+    } else {
+        waitpid(pid, &status, 0);
+        gettimeofday(&end, NULL);
+        long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
+        add_to_history(ogcmd, pid, start, duration);
     }
-    return;
-}
-        
-
-// copy the args array to another ogcmd array
-char *ogcmd[MAX_LINE];
-int i;
-for (i = 0; args[i] != NULL; i++) {
-    ogcmd[i] = args[i];
-}
-ogcmd[i] = NULL;
-// check for pipeline in command
-int num_pipes = 0;
-for (int i = 0; args[i] != NULL; i++) {
-    if (strcmp(args[i], "|") == 0) {
-        num_pipes++;
-    }
-}
-if (num_pipes > 0) {
-    pid_t id_s[num_pipes + 1];
-    int arr[num_pipes * 2];
-    int starter = 0, ender = 0;
-
-    for (int j = 0; j < num_pipes; j++) {
-        if (pipe(arr + j * 2) == -1) {
-            perror("Failed to create pipe");
-            exit(EXIT_FAILURE);
-        }
-    }
-    for (int j = 0; j <= num_pipes; j++) {
-        int ind1 = 0;
-        while (args[ender] != NULL && strcmp(args[ender], "|") != 0) {
-            ind1++;
-            ender++;
-        }
-        args[ender] = NULL;  
-        gettimeofday(&start, NULL);
-        pid_t id_new = fork();
-        if (id_new == 0) {
-            if (j < num_pipes) {
-                dup2(arr[j * 2 + 1], STDOUT_FILENO);
-            }
-            if (j > 0) {
-                dup2(arr[(j - 1) * 2], STDIN_FILENO);
-            }
-            for (int k = 0; k < num_pipes * 2; k++) {
-                close(arr[k]);
-            }
-            execvp(args[starter], args + starter);
-            perror("Execution Error");
-            exit(EXIT_FAILURE);
-        } else if (id_new < 0) {
-            perror("fork process failed");
-        } else {
-            id_s[j] = id_new;
-            starter = ++ender;
-        }
-    }
-
-    for (int j = 0; j < num_pipes * 2; j++) {
-        close(arr[j]);
-    }
-    for (int j = 0; j <= num_pipes; j++) {
-        waitpid(id_s[j], &status, 0);
-    }
-    gettimeofday(&end, NULL);
-    long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
-    add_to_history(ogcmd, id_s[num_pipes], start, duration);
-    return;
-}
-
-// execute single command
-gettimeofday(&start, NULL);
-pid = fork();
-if (pid == 0) {
-    execvp(args[0], args);
-    perror("Execution Error");
-    exit(EXIT_FAILURE);
-} else if (pid < 0) {
-    perror("fork process failed");
-} else {
-    waitpid(pid, &status, 0);
-    gettimeofday(&end, NULL);
-    long duration = (end.tv_sec - start.tv_sec) * 1000 + (end.tv_usec - start.tv_usec) / 1000;
-    add_to_history(ogcmd, pid, start, duration);
-}
-
-
 }
 
 void parse_command(char *cmd, char **args) {
-char *token;
-int i = 0;
-token = strtok(cmd, " \t\n");
-while (token != NULL) {
-    args[i++] = token;
-    token = strtok(NULL, " \t\n");
-}
-args[i] = NULL;
+    char *token;
+    int i = 0;
+
+    token = strtok(cmd, " \t\n");
+    while (token != NULL) {
+        args[i++] = token;
+        token = strtok(NULL, " \t\n");
+    }
+    args[i] = NULL;
 }
 
 int main(int argc, char *argv[]) {
     char cmd[MAX_LINE];
     char *args[MAX_LINE/2 + 1];
     int should_run = 1;
-    
+
+    if (argc > 1) {
+        // Read commands from the script file
+        FILE *script_file = fopen(argv[1], "r");
+        if (script_file == NULL) {
+            perror("Failed to open script file");
+            return 1;
+        }
+
+        char line[MAX_LINE];
+        while (fgets(line, sizeof(line), script_file) != NULL) {
+            // Parse the command and execute it
+            parse_command(line, args);
+            execute_command(args);
+        }
+
+        fclose(script_file);
+        return 0;
+    }
+
     // Register signal handler for SIGINT
     signal(SIGINT, handle_sigint);
 
