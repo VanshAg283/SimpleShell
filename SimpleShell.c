@@ -41,11 +41,26 @@ void add_to_history(char **cmd, pid_t pid, struct timeval start, long duration) 
     history[history_count].duration = duration;
     history_count++;
 }
+void handle_sigint(int sig) {printf("\nCtrl+C pressed. Displaying history:\n");// Display the only history that was written in the shell before running this program and not the whole history from the text filedisplay_history();exit(0);}
+
+void parse_command(char *cmd, char **args) {
+char *token;
+int i = 0;
+token = strtok(cmd, " \t\n");
+while (token != NULL) {
+    args[i++] = token;
+    token = strtok(NULL, " \t\n");
+}
+args[i] = NULL;
+}
 
 int main(int argc, char *argv[]) {
     char cmd[MAX_LINE];
     char *args[MAX_LINE/2 + 1];
     int should_run = 1;
+    / Register signal handler for SIGINT
+    signal(SIGINT, handle_sigint);
+
     
     do {
     printf("SimpleShell> ");
